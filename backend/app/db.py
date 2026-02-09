@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 from app import models
@@ -40,3 +40,12 @@ def session_scope() -> Session:
 
 def init_db() -> None:
     models.Base.metadata.create_all(bind=engine)
+
+
+def check_db() -> bool:
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True
+    except Exception:
+        return False

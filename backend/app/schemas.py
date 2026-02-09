@@ -1,5 +1,5 @@
 from typing import List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Spot(BaseModel):
@@ -22,7 +22,7 @@ class SpotDetail(Spot):
 
 
 class FavoriteRequest(BaseModel):
-    spot_id: str
+    spot_id: str = Field(min_length=1)
 
 
 class AuthRequest(BaseModel):
