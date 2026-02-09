@@ -28,6 +28,7 @@ class FavoriteRequest(BaseModel):
 class AuthRequest(BaseModel):
     provider: str
     token: str
+    nonce: Optional[str] = None
 
 
 class AuthResponse(BaseModel):

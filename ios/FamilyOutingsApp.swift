@@ -2,6 +2,8 @@ import SwiftUI
 import MapKit
 import CoreLocation
 import AuthenticationServices
+import CryptoKit
+import Security
 
 // MARK: - Data Model
 struct SpotDTO: Codable {
@@ -219,8 +221,11 @@ final class UserAuthManager: ObservableObject {
     @Published var isLoggedIn = false
     @Published var userId: String? = nil
     @Published var sessionToken: String? = nil
+    @Published var isAuthenticating = false
+    @Published var authError: String? = nil
 
     private let guestKey = "guest_user_id"
+    private var currentNonce: String? = nil
 
     func ensureUserId() {
         if let existing = UserDefaults.standard.string(forKey: guestKey) {
@@ -237,9 +242,40 @@ final class UserAuthManager: ObservableObject {
         isLoggedIn = true
     }
 
+    func prepareAppleSignIn() -> String {
+        let nonce = randomNonceString()
+        currentNonce = nonce
+        return nonce
+    }
+
+    func signInWithApple(idToken: String) {
+        guard let nonce = currentNonce else {
+            authError = "認証に失敗しました"
+            return
+        }
+        Task { await signInWithAppleAsync(idToken: idToken, nonce: nonce) }
+    }
+
     func signOut() {
         isLoggedIn = false
         sessionToken = nil
+    }
+
+    @MainActor
+    private func signInWithAppleAsync(idToken: String, nonce: String) async {
+        isAuthenticating = true
+        authError = nil
+        defer { isAuthenticating = false }
+
+        do {
+            let response = try await APIClient.shared.verifyAppleSignIn(token: idToken, nonce: nonce)
+            userId = response.user_id
+            sessionToken = response.session_token
+            isLoggedIn = true
+            currentNonce = nil
+        } catch {
+            authError = "認証に失敗しました"
+        }
     }
 }
 
@@ -561,16 +597,35 @@ struct UserLoginView: View {
             Text("ログイン")
                 .font(.title2)
 
-            SignInWithAppleButton(.signIn, onRequest: { _ in
-                // TODO: Implement Apple Sign-In
-            }, onCompletion: { _ in
-                auth.ensureUserId()
-                auth.isLoggedIn = true
+            SignInWithAppleButton(.signIn, onRequest: { request in
+                let nonce = auth.prepareAppleSignIn()
+                request.requestedScopes = [.fullName, .email]
+                request.nonce = sha256(nonce)
+            }, onCompletion: { result in
+                switch result {
+                case .success(let authResult):
+                    guard
+                        let credential = authResult.credential as? ASAuthorizationAppleIDCredential,
+                        let tokenData = credential.identityToken,
+                        let tokenString = String(data: tokenData, encoding: .utf8)
+                    else {
+                        auth.authError = "認証に失敗しました"
+                        return
+                    }
+                    auth.signInWithApple(idToken: tokenString)
+                case .failure:
+                    auth.authError = "認証に失敗しました"
+                }
             })
             .frame(height: 44)
 
             Button("ゲストとして続行") {
                 auth.signInAsGuest()
+            }
+
+            if auth.isAuthenticating { ProgressView() }
+            if let error = auth.authError {
+                Text(error).font(.caption).foregroundColor(.red)
             }
         }
         .padding()
@@ -727,6 +782,12 @@ struct FamilyOutingsApp: App {
 }
 
 // MARK: - API Client
+struct AuthResponseDTO: Codable {
+    let user_id: String
+    let session_token: String
+    let is_admin: Bool
+}
+
 struct FavoritesResponseDTO: Codable {
     let items: [SpotDTO]
 }
@@ -734,7 +795,7 @@ struct FavoritesResponseDTO: Codable {
 final class APIClient {
     static let shared = APIClient()
 
-    private let baseURL = URL(string: "http://localhost:8000")!
+    private let baseURL = URL(string: "https://amily-outings.onrender.com")!
     private let session = URLSession.shared
     private let decoder = JSONDecoder()
 
@@ -769,6 +830,18 @@ final class APIClient {
         request.setValue(userId, forHTTPHeaderField: "X-User-Id")
         let response = try await get(request: request, responseType: FavoritesResponseDTO.self)
         return response.items
+    }
+
+    func verifyAppleSignIn(token: String, nonce: String) async throws -> AuthResponseDTO {
+        var request = URLRequest(url: baseURL.appendingPathComponent("auth/verify"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode([
+            "provider": "apple",
+            "token": token,
+            "nonce": nonce
+        ])
+        return try await get(request: request, responseType: AuthResponseDTO.self)
     }
 
     func addFavorite(userId: String, spotId: String) async throws {
@@ -806,4 +879,35 @@ final class APIClient {
             throw NSError(domain: "API", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: message])
         }
     }
+}
+
+// MARK: - Sign in with Apple helpers
+private func sha256(_ input: String) -> String {
+    let inputData = Data(input.utf8)
+    let hashed = SHA256.hash(data: inputData)
+    return hashed.map { String(format: "%02x", $0) }.joined()
+}
+
+private func randomNonceString(length: Int = 32) -> String {
+    let charset = Array("0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._")
+    var result = ""
+    var remainingLength = length
+
+    while remainingLength > 0 {
+        var randoms = [UInt8](repeating: 0, count: 16)
+        let status = SecRandomCopyBytes(kSecRandomDefault, randoms.count, &randoms)
+        if status != errSecSuccess {
+            return UUID().uuidString
+        }
+
+        randoms.forEach { random in
+            if remainingLength == 0 { return }
+            if Int(random) < charset.count {
+                result.append(charset[Int(random)])
+                remainingLength -= 1
+            }
+        }
+    }
+
+    return result
 }
