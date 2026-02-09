@@ -14,7 +14,7 @@ import argparse
 import json
 import os
 from dataclasses import dataclass, asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Iterable, List, Optional
 
 
@@ -80,7 +80,7 @@ def normalize_tags(tags: Iterable[str]) -> List[str]:
 
 
 def normalize_record(raw: dict, source: str) -> SpotRecord:
-    now = datetime.utcnow().isoformat() + "Z"
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     return SpotRecord(
         id=raw.get("id") or f"{source}:{raw.get('name','unknown')}",
         name=raw.get("name", ""),
@@ -119,6 +119,8 @@ def upsert_to_db(records: Iterable[SpotRecord]) -> None:
     database_url = os.getenv("DATABASE_URL")
     if not database_url:
         raise RuntimeError("DATABASE_URL is required to upsert records")
+    if database_url.startswith("postgresql+psycopg://"):
+        database_url = database_url.replace("postgresql+psycopg://", "postgresql://", 1)
 
     records = list(records)
     if not records:

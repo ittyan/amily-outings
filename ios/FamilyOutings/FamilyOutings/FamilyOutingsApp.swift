@@ -546,18 +546,6 @@ struct ContentView: View {
                         }
                     }
 
-                    if let spot = selectedSpot {
-                        NavigationLink(destination: SpotDetailView(spot: spot, dataManager: dataManager)) {
-                            Text("詳細を見る")
-                                .frame(maxWidth: .infinity)
-                                .padding()
-                                .background(Color.blue)
-                                .foregroundColor(.white)
-                                .cornerRadius(8)
-                                .padding(.horizontal)
-                        }
-                    }
-
                     AdBannerView()
                         .padding(.top, 8)
                 }
@@ -577,8 +565,19 @@ struct ContentView: View {
                     locationManager.requestLocation()
                     spotDataService.fetchSpots(in: locationManager.region)
                 }
+                .onChange(of: searchText) { _ in
+                    selectedSpot = nil
+                }
+                .onChange(of: viewMode) { mode in
+                    if mode == 1 {
+                        selectedSpot = nil
+                    }
+                }
                 .sheet(isPresented: $showFilters) {
                     FiltersView(filters: $filters)
+                }
+                .navigationDestination(item: $selectedSpot) { spot in
+                    SpotDetailView(spot: spot, dataManager: dataManager)
                 }
             }
         }

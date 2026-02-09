@@ -164,6 +164,8 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
 // MARK: - Spot Data Service (Mock)
 final class SpotDataService: ObservableObject {
     @Published var spots: [Spot] = []
+    @Published var isLoading = false
+    @Published var lastError: String? = nil
 
     func fetchSpots(in region: MKCoordinateRegion, filters: SpotFilters, searchText: String) {
         Task {
@@ -173,6 +175,9 @@ final class SpotDataService: ObservableObject {
 
     @MainActor
     private func fetchSpotsAsync(in region: MKCoordinateRegion, filters: SpotFilters, searchText: String) async {
+        isLoading = true
+        lastError = nil
+        defer { isLoading = false }
         do {
             let dtos = try await APIClient.shared.fetchSpots(
                 lat: region.center.latitude,
@@ -183,7 +188,7 @@ final class SpotDataService: ObservableObject {
             )
             spots = dtos.map { Spot(dto: $0) }
         } catch {
-            // Keep last known spots on error
+            lastError = "データ取得に失敗しました"
         }
     }
 }
@@ -388,23 +393,35 @@ struct SpotMapView: View {
 struct SpotListView: View {
     let items: [ListItem]
     let onSelect: (Spot) -> Void
+    let isLoading: Bool
+    let emptyMessage: String
 
     var body: some View {
-        List(items) { item in
-            switch item {
-            case .spot(let spot):
-                Button(action: { onSelect(spot) }) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(spot.name).font(.headline)
-                        Text(spot.address).font(.subheadline).foregroundColor(.secondary)
-                        if let price = spot.priceRange {
-                            Text("料金: \(price.label)").font(.caption)
+        List {
+            if items.isEmpty && !isLoading {
+                VStack(spacing: 8) {
+                    Text(emptyMessage).font(.callout).foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 200)
+                .listRowSeparator(.hidden)
+            } else {
+                ForEach(items) { item in
+                    switch item {
+                    case .spot(let spot):
+                        Button(action: { onSelect(spot) }) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(spot.name).font(.headline)
+                                Text(spot.address).font(.subheadline).foregroundColor(.secondary)
+                                if let price = spot.priceRange {
+                                    Text("料金: \(price.label)").font(.caption)
+                                }
+                            }
                         }
+                    case .ad:
+                        AdBannerView()
+                            .listRowSeparator(.hidden)
                     }
                 }
-            case .ad:
-                AdBannerView()
-                    .listRowSeparator(.hidden)
             }
         }
         .listStyle(.plain)
@@ -656,6 +673,7 @@ struct ContentView: View {
     @State private var showFilters = false
     @State private var filters = SpotFilters()
     @State private var searchText = ""
+    @State private var showFetchError = false
 
     var body: some View {
         NavigationStack {
@@ -671,26 +689,27 @@ struct ContentView: View {
                     .padding()
 
                     if viewMode == 0 {
-                        SpotMapView(
-                            locationManager: locationManager,
-                            spotDataService: spotDataService,
-                            selectedSpot: $selectedSpot
-                        )
-                    } else {
-                        SpotListView(items: listItems) { spot in
-                            selectedSpot = spot
+                        ZStack(alignment: .top) {
+                            SpotMapView(
+                                locationManager: locationManager,
+                                spotDataService: spotDataService,
+                                selectedSpot: $selectedSpot
+                            )
+                            if spotDataService.isLoading {
+                                ProgressView("読み込み中...")
+                                    .padding(12)
+                                    .background(Color(.systemBackground).opacity(0.9))
+                                    .cornerRadius(8)
+                                    .padding(.top, 8)
+                            }
                         }
-                    }
-
-                    if let spot = selectedSpot {
-                        NavigationLink(destination: SpotDetailView(spot: spot, dataManager: dataManager, userId: userAuth.userId ?? \"\")) {
-                            Text("詳細を見る")
-                                .frame(maxWidth: .infinity)
-                                .padding()
-                                .background(Color.blue)
-                                .foregroundColor(.white)
-                                .cornerRadius(8)
-                                .padding(.horizontal)
+                    } else {
+                        SpotListView(
+                            items: listItems,
+                            isLoading: spotDataService.isLoading,
+                            emptyMessage: "該当するスポットが見つかりません"
+                        ) { spot in
+                            selectedSpot = spot
                         }
                     }
 
@@ -713,6 +732,11 @@ struct ContentView: View {
                     locationManager.requestLocation()
                     spotDataService.fetchSpots(in: locationManager.region, filters: filters, searchText: searchText)
                 }
+                .onReceive(spotDataService.$lastError) { error in
+                    if error != nil {
+                        showFetchError = true
+                    }
+                }
                 .onChange(of: locationManager.region) { newRegion in
                     spotDataService.fetchSpots(in: newRegion, filters: filters, searchText: searchText)
                 }
@@ -727,6 +751,12 @@ struct ContentView: View {
                 }
                 .onChange(of: searchText) { _ in
                     spotDataService.fetchSpots(in: locationManager.region, filters: filters, searchText: searchText)
+                    selectedSpot = nil
+                }
+                .onChange(of: viewMode) { mode in
+                    if mode == 1 {
+                        selectedSpot = nil
+                    }
                 }
                 .onChange(of: userAuth.isLoggedIn) { loggedIn in
                     if loggedIn, let userId = userAuth.userId {
@@ -735,6 +765,14 @@ struct ContentView: View {
                 }
                 .sheet(isPresented: $showFilters) {
                     FiltersView(filters: $filters)
+                }
+                .alert("取得エラー", isPresented: $showFetchError) {
+                    Button("OK", role: .cancel) {}
+                } message: {
+                    Text(spotDataService.lastError ?? "通信に失敗しました")
+                }
+                .navigationDestination(item: $selectedSpot) { spot in
+                    SpotDetailView(spot: spot, dataManager: dataManager, userId: userAuth.userId ?? "")
                 }
             }
         }

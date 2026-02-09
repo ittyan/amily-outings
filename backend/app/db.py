@@ -18,6 +18,8 @@ def _default_sqlite_url() -> str:
 
 def _build_engine_url() -> str:
     if DATABASE_URL:
+        if DATABASE_URL.startswith("postgresql://"):
+            return DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
         return DATABASE_URL
     return _default_sqlite_url()
 
