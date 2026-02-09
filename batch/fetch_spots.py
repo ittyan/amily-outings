@@ -5,7 +5,7 @@ Steps:
 2) Normalize/clean fields
 3) Geocode addresses to lat/lng
 4) De-duplicate
-5) Upsert into DB (placeholder)
+5) Upsert into DB
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ class LocalSampleSource(Source):
                 "cost_range": "FREE",
                 "age_min": 0,
                 "age_max": 8,
-                "tags": ["屋外", "ベビーカーOK"],
+                "tags": ["Outdoor", "Stroller OK"],
                 "images": [],
                 "hours": "9:00-17:00",
             }
@@ -113,10 +113,55 @@ def dedupe(records: Iterable[SpotRecord]) -> List[SpotRecord]:
 
 
 def upsert_to_db(records: Iterable[SpotRecord]) -> None:
-    # TODO: Replace with real DB upsert (PostgreSQL + PostGIS).
-    # For now we just print summary stats.
+    import psycopg
+    from psycopg.types.json import Json
+
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is required to upsert records")
+
     records = list(records)
-    print(f"Upsert placeholder: {len(records)} records")
+    if not records:
+        print("No records to upsert")
+        return
+
+    sql = """
+    INSERT INTO spots (
+        id, name, lat, lng, address, summary, official_url,
+        cost_range, age_min, age_max, tags, images, hours, created_at, updated_at
+    ) VALUES (
+        %(id)s, %(name)s, %(lat)s, %(lng)s, %(address)s, %(summary)s, %(official_url)s,
+        %(cost_range)s, %(age_min)s, %(age_max)s, %(tags)s, %(images)s, %(hours)s,
+        NOW(), NOW()
+    )
+    ON CONFLICT (id) DO UPDATE SET
+        name = EXCLUDED.name,
+        lat = EXCLUDED.lat,
+        lng = EXCLUDED.lng,
+        address = EXCLUDED.address,
+        summary = EXCLUDED.summary,
+        official_url = EXCLUDED.official_url,
+        cost_range = EXCLUDED.cost_range,
+        age_min = EXCLUDED.age_min,
+        age_max = EXCLUDED.age_max,
+        tags = EXCLUDED.tags,
+        images = EXCLUDED.images,
+        hours = EXCLUDED.hours,
+        updated_at = NOW()
+    """
+
+    rows = []
+    for record in records:
+        payload = asdict(record)
+        payload["tags"] = Json(payload.get("tags") or [])
+        payload["images"] = Json(payload.get("images") or [])
+        rows.append(payload)
+
+    with psycopg.connect(database_url) as conn:
+        with conn.cursor() as cur:
+            cur.executemany(sql, rows)
+        conn.commit()
+    print(f"Upserted: {len(records)} records")
 
 
 def write_output(records: Iterable[SpotRecord], output_path: str) -> None:
